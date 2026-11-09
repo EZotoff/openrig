@@ -106,6 +106,28 @@ export function textCells(text: string): number {
   return cells;
 }
 
+// ── Pane text styles ───────────────────────────────────────────────────────
+// Emphasis for the lines the runner itself writes, in the spirit of the OpenCode TUI.
+// Model output and the READY/EXITED/ERROR markers stay unstyled: adapters grep the
+// transcript for those markers, and a plain pane log stays readable. NO_COLOR and a
+// non-TTY output disable styling.
+export interface PaneStyle {
+  bold(text: string): string;
+  dim(text: string): string;
+  /** The operator's own lines: `you ▸ …`, `you (steer) ▸ …`. */
+  commit(text: string): string;
+  /** A failed tool call's verdict. */
+  failed(text: string): string;
+}
+
+export function paneStyles(enabled: boolean): PaneStyle {
+  const sgr = (open: string) => (text: string) => (enabled ? `\u001b[${open}m${text}\u001b[0m` : text);
+  return { bold: sgr("1"), dim: sgr("2"), commit: sgr("1;36"), failed: sgr("1;31") };
+}
+
+const STYLE: PaneStyle = paneStyles(process.stdout.isTTY === true && !process.env.NO_COLOR);
+
+
 // ── Pane live region (compose + status) ────────────────────────────────────
 // A seat pane is a plain terminal: one bottom live region holds the operator's draft
 // and the runner's status line, and is erased and repainted around every transcript
@@ -490,7 +512,7 @@ function modelErrorNotice(event: Record<string, unknown>, runtime: RunnerRuntime
   return {};
 }
 
-export function mapPiEvent(event: Record<string, unknown>, runtime: RunnerRuntime = "pi"): MirrorAndActivity {
+export function mapPiEvent(event: Record<string, unknown>, runtime: RunnerRuntime = "pi", style: PaneStyle = STYLE): MirrorAndActivity {
   const type = typeof event.type === "string" ? event.type : "";
   switch (type) {
     case "agent_start":
@@ -532,12 +554,12 @@ export function mapPiEvent(event: Record<string, unknown>, runtime: RunnerRuntim
       return { mirrorLines: [""], ...modelErrorNotice(event, runtime) };
     case "tool_execution_start": {
       const tool = typeof event.toolName === "string" ? event.toolName : (typeof event.name === "string" ? event.name : "tool");
-      return { mirrorLines: [`  ⚙ ${tool} …`], activity: { hookEvent: "PreToolUse", subtype: tool } };
+      return { mirrorLines: [`  ${style.dim(`⚙ ${tool} …`)}`], activity: { hookEvent: "PreToolUse", subtype: tool } };
     }
     case "tool_execution_end": {
       const tool = typeof event.toolName === "string" ? event.toolName : (typeof event.name === "string" ? event.name : "tool");
       const failed = event.isError === true || event.error != null;
-      return { mirrorLines: [`  ⚙ ${tool} ${failed ? "FAILED" : "done"}`] };
+      return { mirrorLines: [`  ${style.dim(`⚙ ${tool}`)} ${failed ? style.failed("FAILED") : "done"}`] };
     }
     case "queue_update":
       return { mirrorLines: [] };
@@ -586,7 +608,10 @@ export interface RunnerIo {
    *  when the pane provides one. Falls back to mirrorLine. */
   diagnostic?(text: string): void;
   /** Drop a pinned status line at the start of a new agent turn. */
+  /** Drop a pinned status line at the start of a new agent turn. */
   clearStatus?(): void;
+  /** Paint the seat's status line (what it runs, whether it is working). */
+  setStatus?(text: string): void;
   /** POST to the daemon activity endpoint. May resolve to the parsed JSON
    *  response (null on transport failure) so identity delivery can retry. */
   postActivity(payload: Record<string, unknown>): void | Promise<Record<string, unknown> | null>;
@@ -730,6 +755,8 @@ export class RunnerCore {
     private io: RunnerIo,
     private identity: { sessionName: string; nodeId?: string; launchId?: string; generation?: string },
     private opts: { catchUpSince?: string; runtime?: RunnerRuntime; usageFacts?: boolean; openRouterCharge?: boolean;
+      /** The seat profile's model and effort, shown on the pane status line. */
+      model?: string; thinking?: string;
       /** K4: the credential observation taken before Pi was spawned. */
       launchCredentialEvidence?: PiCredentialEvidence } = {},
   ) {
@@ -833,7 +860,7 @@ export class RunnerCore {
     if (block.startsWith("/followup ")) {
       const message = block.slice("/followup ".length);
       this.io.sendRpc({ type: "follow_up", message });
-      this.io.mirrorLine(`you (follow-up) ▸ ${message}`);
+      this.io.mirrorLine(`${STYLE.commit("you (follow-up) ▸")} ${message}`);
       this.acceptIntoOpenRun();
       return;
     }
@@ -842,7 +869,7 @@ export class RunnerCore {
     // The runner's `streaming` starts only at agent_start, so it can't tell when a turn is about to start (#1932) or
     // when a prompt was consumed locally and started none. It labels the mirror line only.
     this.io.sendRpc({ type: "prompt", message: block, streamingBehavior: "steer" });
-    this.io.mirrorLine(this.streaming ? `you (steer) ▸ ${block}` : `you ▸ ${block}`);
+    this.io.mirrorLine(this.streaming ? `${STYLE.commit("you (steer) ▸")} ${block}` : `${STYLE.commit("you ▸")} ${block}`);
     this.acceptIntoOpenRun();
   }
 
@@ -922,6 +949,7 @@ export class RunnerCore {
         // Subsequent get_state evaluations confirm liveness silently to avoid
         // terminal output spam while preserving state updates.
         this.io.mirrorLine(`${this.runtime === "omp" ? "[omp-runner] READY" : PI_RUNNER_READY_MARKER} session=${this.sessionFile ?? "unknown"}`);
+        this.refreshPaneStatus();
       }
       // Re-post session identity on every successful get_state reply so the
       // daemon can discover replacement runners and keep session records current.
@@ -1074,6 +1102,14 @@ export class RunnerCore {
     else this.io.mirrorLine(text);
   }
 
+  /** The pane's status line: what this seat runs, and whether it is working. */
+  private refreshPaneStatus(): void {
+    const parts = [this.opts.model ?? "pi"];
+    if (this.opts.thinking) parts.push(`thinking:${this.opts.thinking}`);
+    parts.push(this.streaming ? "working" : "idle");
+    this.io.setStatus?.(parts.join(" \u00b7 "));
+  }
+
   private handleEvent(event: Record<string, unknown>): void {
     if ((this.runtime === "omp" || this.runtime === "pi") && event.type === "extension_ui_request") {
       const method = event.method;
@@ -1113,6 +1149,7 @@ export class RunnerCore {
     if (event.type === "agent_start") {
       this.clearAttention();
       this.io.clearStatus?.();
+      this.refreshPaneStatus();
     }
     if (this.runtime === "omp") {
       if (event.type === "agent_start" || event.type === "turn_start"
@@ -1133,7 +1170,11 @@ export class RunnerCore {
     // that opens is posted as one, before its first event; a prompt Pi handles without a run opens none. A prompt sent
     // into an open run is accepted as it's sent (acceptIntoOpenRun).
     const opening = this.runtime === "pi" && mapped.streaming === true && !this.streaming;
-    if (mapped.streaming !== undefined) this.streaming = mapped.streaming;
+    if (mapped.streaming !== undefined) {
+      const changed = this.streaming !== mapped.streaming;
+      this.streaming = mapped.streaming;
+      if (changed) this.refreshPaneStatus();
+    }
     if (opening) {
       this.turn += 1;
       this.io.postActivity(this.activityPayload("UserPromptSubmit", "accepted", { turnId: String(this.turn) }));
@@ -1692,6 +1733,7 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
     mirrorLine: (line) => pane.line(line),
     mirrorAppend: (text) => pane.transcript(text),
     diagnostic: (text) => pane.diagnostic(text),
+    setStatus: (text) => pane.diagnostic(text),
     clearStatus: () => pane.clearStatus(),
     postActivity: (payload) => {
       if (!endpoint || typeof fetch !== "function") return;
@@ -1747,7 +1789,7 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
     sessionName: args.sessionName, nodeId: process.env.OPENRIG_NODE_ID, launchId: args.launchId,
     // Carry the emitting tenure; never infer it from a later daemon read or Pi event.
     generation: process.env.OPENRIG_OCCUPANT_GENERATION,
-  }, { catchUpSince, runtime, usageFacts: args.usageFacts === true, openRouterCharge: args.openRouterCharge === true, launchCredentialEvidence });
+  }, { catchUpSince, runtime, usageFacts: args.usageFacts === true, openRouterCharge: args.openRouterCharge === true, launchCredentialEvidence, model: args.model, thinking: args.thinking });
 
   let transportUp = runtime === "pi";
   readline.createInterface({ input: child.stdout }).on("line", (line) => {
