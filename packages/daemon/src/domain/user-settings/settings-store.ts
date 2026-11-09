@@ -882,9 +882,21 @@ function percentageConstraint(key: string) {
   };
 }
 
+function seatScaleRigListConstraint(raw: string): void {
+  const value: unknown = JSON.parse(raw);
+  if (!Array.isArray(value) || !value.every((item: unknown) => typeof item === "string" && item.trim().length > 0)) {
+    throw new TypeError("Expected a JSON array of nonempty rig names");
+  }
+}
+
 const KEY_CONSTRAINTS: Partial<Record<SettingsValidKey, (raw: string, coerced: string | number | boolean) => void>> = {
-  "policies.seat_scale.idle_threshold_minutes": positiveIntegerConstraint("policies.seat_scale.idle_threshold_minutes"),
+  "policies.seat_scale.idle_threshold_minutes": (raw, value) => {
+    positiveIntegerConstraint("policies.seat_scale.idle_threshold_minutes")(raw, value);
+    if (typeof value !== "number" || value < 60 || value > 525600) throw new RangeError("Seat idle threshold must be 60..525600 whole minutes");
+  },
   "policies.seat_scale.max_reaps_per_24h": positiveIntegerConstraint("policies.seat_scale.max_reaps_per_24h"),
+  "policies.seat_scale.protected_rigs": seatScaleRigListConstraint,
+  "policies.seat_scale.opt_in_rigs": seatScaleRigListConstraint,
   "terminal.tmux_server": (raw) => {
     if (raw !== "inherit" && raw !== "isolated") {
       throw new Error(`Invalid value for terminal.tmux_server: must be "inherit" or "isolated", got "${raw}"`);
