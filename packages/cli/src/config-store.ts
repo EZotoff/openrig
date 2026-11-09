@@ -136,6 +136,7 @@ export interface RiggedConfig {
   // defaults to loading the canonical restore skill plus a user-owned
   // extra instruction file path for mission-specific reading lists.
   policies: {
+    seatScale: { enabled: boolean; observe: boolean; idleThresholdMinutes: number; maxReapsPer24h: number; protectedRigs: string; optInRigs: string };
     claudeCompaction: {
       preparationRoot: string;
       enabled: boolean;
@@ -344,6 +345,7 @@ const DEFAULTS = {
   },
   // Slice 27 — opt-in default-off. Threshold default 80% per spec.
   policies: {
+    seatScale: { enabled: false, observe: true, idleThresholdMinutes: 240, maxReapsPer24h: 12, protectedRigs: '["coordination"]', optInRigs: "[]" },
     claudeCompaction: {
       preparationRoot: "",
       enabled: false,
@@ -529,6 +531,12 @@ export const VALID_KEYS = [
   // the daemon settings-store keys (see there for semantics).
   "policies.idle_gate_qitem.auto_register",
   "policies.idle_gate_qitem.opt_in_sessions",
+  "policies.seat_scale.enabled",
+  "policies.seat_scale.observe",
+  "policies.seat_scale.idle_threshold_minutes",
+  "policies.seat_scale.max_reaps_per_24h",
+  "policies.seat_scale.protected_rigs",
+  "policies.seat_scale.opt_in_rigs",
   "snapshots.periodic.enabled",
   "snapshots.periodic.interval_seconds",
   "snapshots.periodic.retention_keep",
@@ -669,6 +677,12 @@ export const ENV_MAP: Record<ValidKey, { primary: string; legacy?: string }> = {
   "policies.idle_gate_qitem.active_wake_interval_seconds": { primary: "OPENRIG_POLICIES_IDLE_GATE_QITEM_ACTIVE_WAKE_INTERVAL_SECONDS" },
   "policies.idle_gate_qitem.auto_register": { primary: "OPENRIG_POLICIES_IDLE_GATE_QITEM_AUTO_REGISTER" },
   "policies.idle_gate_qitem.opt_in_sessions": { primary: "OPENRIG_POLICIES_IDLE_GATE_QITEM_OPT_IN_SESSIONS" },
+  "policies.seat_scale.enabled": { primary: "OPENRIG_POLICIES_SEAT_SCALE_ENABLED" },
+  "policies.seat_scale.observe": { primary: "OPENRIG_POLICIES_SEAT_SCALE_OBSERVE" },
+  "policies.seat_scale.idle_threshold_minutes": { primary: "OPENRIG_POLICIES_SEAT_SCALE_IDLE_THRESHOLD_MINUTES" },
+  "policies.seat_scale.max_reaps_per_24h": { primary: "OPENRIG_POLICIES_SEAT_SCALE_MAX_REAPS_PER_24H" },
+  "policies.seat_scale.protected_rigs": { primary: "OPENRIG_POLICIES_SEAT_SCALE_PROTECTED_RIGS" },
+  "policies.seat_scale.opt_in_rigs": { primary: "OPENRIG_POLICIES_SEAT_SCALE_OPT_IN_RIGS" },
   "snapshots.periodic.enabled": { primary: "OPENRIG_SNAPSHOTS_PERIODIC_ENABLED" },
   "snapshots.periodic.interval_seconds": { primary: "OPENRIG_SNAPSHOTS_PERIODIC_INTERVAL_SECONDS" },
   "snapshots.periodic.retention_keep": { primary: "OPENRIG_SNAPSHOTS_PERIODIC_RETENTION_KEEP" },
@@ -779,6 +793,12 @@ const KEY_TO_PATH: Record<ValidKey, string[]> = {
   "policies.idle_gate_qitem.active_wake_interval_seconds": ["policies", "idleGateQitem", "activeWakeIntervalSeconds"],
   "policies.idle_gate_qitem.auto_register": ["policies", "idleGateQitem", "autoRegister"],
   "policies.idle_gate_qitem.opt_in_sessions": ["policies", "idleGateQitem", "optInSessions"],
+  "policies.seat_scale.enabled": ["policies", "seatScale", "enabled"],
+  "policies.seat_scale.observe": ["policies", "seatScale", "observe"],
+  "policies.seat_scale.idle_threshold_minutes": ["policies", "seatScale", "idleThresholdMinutes"],
+  "policies.seat_scale.max_reaps_per_24h": ["policies", "seatScale", "maxReapsPer24h"],
+  "policies.seat_scale.protected_rigs": ["policies", "seatScale", "protectedRigs"],
+  "policies.seat_scale.opt_in_rigs": ["policies", "seatScale", "optInRigs"],
   "snapshots.periodic.enabled": ["snapshots", "periodic", "enabled"],
   "snapshots.periodic.interval_seconds": ["snapshots", "periodic", "intervalSeconds"],
   "snapshots.periodic.retention_keep": ["snapshots", "periodic", "retentionKeep"],
@@ -1086,6 +1106,8 @@ const KEY_CONSTRAINTS: Partial<Record<ValidKey, (raw: string, coerced: string | 
   "health.context_pressure.warning_percent": percentageConstraint("health.context_pressure.warning_percent"),
   "health.context_pressure.critical_percent": percentageConstraint("health.context_pressure.critical_percent"),
   "policies.idle_gate_qitem.scan_interval_seconds": positiveIntegerConstraint("policies.idle_gate_qitem.scan_interval_seconds"),
+  "policies.seat_scale.idle_threshold_minutes": positiveIntegerConstraint("policies.seat_scale.idle_threshold_minutes"),
+  "policies.seat_scale.max_reaps_per_24h": positiveIntegerConstraint("policies.seat_scale.max_reaps_per_24h"),
   "policies.idle_gate_qitem.active_wake_interval_seconds": positiveIntegerConstraint("policies.idle_gate_qitem.active_wake_interval_seconds"),
   "policies.idle_gate_qitem.auto_register": (raw) => {
     const v = (raw ?? "").trim();
@@ -1433,7 +1455,15 @@ export class ConfigStore {
           messageFilePath: v("policies.claude_compaction.message_file_path") as string,
           postRestoreAuditInstruction: v("policies.claude_compaction.post_restore_audit_instruction") as string,
         },
-        idleGateQitem: {
+      seatScale: {
+        enabled: v("policies.seat_scale.enabled") === true,
+        observe: v("policies.seat_scale.observe") === true,
+        idleThresholdMinutes: Number(v("policies.seat_scale.idle_threshold_minutes")),
+        maxReapsPer24h: Number(v("policies.seat_scale.max_reaps_per_24h")),
+        protectedRigs: String(v("policies.seat_scale.protected_rigs")),
+        optInRigs: String(v("policies.seat_scale.opt_in_rigs")),
+      },
+      idleGateQitem: {
           scanIntervalSeconds: v("policies.idle_gate_qitem.scan_interval_seconds") as number,
           activeWakeIntervalSeconds: v("policies.idle_gate_qitem.active_wake_interval_seconds") as number,
           autoRegister: v("policies.idle_gate_qitem.auto_register") as string,
