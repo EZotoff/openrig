@@ -148,6 +148,9 @@ import {
   WatchdogPolicyEngine,
 } from "./domain/watchdog-policy-engine.js";
 import { WatchdogScheduler } from "./domain/watchdog-scheduler.js";
+import { SeatReaperService } from "./domain/seat-reaper-service.js";
+import { SeatLifecycleService } from "./domain/seat-lifecycle-service.js";
+import { deriveResumeToken } from "./domain/resume-token-capture.js";
 import {
   ContinuityPolicyMaterializer,
   createContinuityCutoverBaton,
@@ -2517,6 +2520,14 @@ export async function createDaemon(opts?: DaemonOptions): Promise<DaemonResult> 
     });
     deps.watchdogPolicyEngine = watchdogPolicyEngine;
     deps.watchdogScheduler = watchdogScheduler;
+    deps.seatReaper = new SeatReaperService({
+      db, eventBus, activity: seatActivityService, guard: tmuxAdapter.deliveryGuard,
+      lifecycle: new SeatLifecycleService({ db, eventBus, rigRepo, sessionRegistry, tmuxAdapter }),
+      capture: seat => deriveResumeToken({ runtime: seat.runtime, sessionName: seat.canonicalSessionName ?? "", nodeId: seat.nodeId }, {
+        contextUsageStore, claudeProcessStartedAt, resumeTokenCapturer: resumeMetadataRefresher,
+        piRunnerStateStore: piAdapter, ompRunnerStateStore: ompAdapter,
+      }),
+    });
 
     // OPR.0.5.6.24 F-14 — ONE parked-owner supervisor job per rig (mini-req 1):
     // ensured idempotently on the (policy, target_session) tuple; the anchor is
