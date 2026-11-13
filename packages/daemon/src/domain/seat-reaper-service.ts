@@ -78,7 +78,7 @@ export class SeatReaperService {
           workspace = "defer-probe-failed";
         }
         if (workspace !== "clean") {
-          for (const seat of seats) { this.store.reset(seat.nodeId); this.emit({ phase: "decision", rigId: rig.id, nodeId: seat.nodeId, decision: workspace }); }
+          for (const seat of seats) { this.store.reset(seat.nodeId); this.emitDecisionOnce(seat.nodeId, workspace, { rigId: rig.id }); }
           this.failed ||= workspace === "defer-probe-failed"; continue;
         }
         for (const seat of seats) {
@@ -103,11 +103,23 @@ export class SeatReaperService {
     } finally { this.running = false; }
   }
 
+  /** Review finding (slice 2): a decision event per seat per tick flooded the ledger
+   * (~72k rows/day on a 50-seat fleet). Emit a seat's decision when it CHANGES, and at
+   * most once an hour while it stays the same — the receipt events are unaffected. */
+  private readonly lastDecision = new Map<string, { decision: string; at: number }>();
+  private emitDecisionOnce(nodeId: string, decision: string, extra: Record<string, unknown> = {}): void {
+    const previous = this.lastDecision.get(nodeId);
+    const now = this.now();
+    if (previous && previous.decision === decision && now - previous.at < 3_600_000) return;
+    this.lastDecision.set(nodeId, { decision, at: now });
+    this.emit({ phase: "decision", nodeId, decision, ...extra });
+  }
+
   private async consider(seat: NodeInventoryEntry, settings: SeatReaperSettings, workspaceCheck: () => Promise<WorkspaceProbe>): Promise<void> {
     const guard = this.deps.guard;
     if (!guard || !seat.canonicalSessionName) {
       this.store.reset(seat.nodeId);
-      if (!guard) { this.failed = true; this.emit({ phase: "decision", nodeId: seat.nodeId, decision: "defer-probe-failed" }); }
+      if (!guard) { this.failed = true; this.emitDecisionOnce(seat.nodeId, "defer-probe-failed"); }
       return;
     }
     let attempted = false;
@@ -118,8 +130,9 @@ export class SeatReaperService {
         const proof = reapEligibility(this.deps.db, current, this.deps.activity.getSeatStateBySession(current.canonicalSessionName));
         if (!proof.eligible || !proof.session || !proof.generation) {
           this.store.reset(seat.nodeId);
-          this.emit({ phase: "decision", rigId: seat.rigId, nodeId: seat.nodeId,
-            decision: proof.snapshot.activity === "unknown" ? "defer-probe-failed" : proof.snapshot.inbox > 0 ? "pending-work" : "ineligible" });
+          this.emitDecisionOnce(seat.nodeId,
+            proof.snapshot.activity === "unknown" ? "defer-probe-failed" : proof.snapshot.inbox > 0 ? "pending-work" : "ineligible",
+            { rigId: seat.rigId });
           return;
         }
         const since = this.store.observe({ nodeId: seat.nodeId, sessionId: proof.session.id, generation: proof.generation, activitySeq: proof.activitySeq }, this.now());
@@ -127,7 +140,7 @@ export class SeatReaperService {
         const common = { rigId: seat.rigId, rigName: seat.rigName, nodeId: seat.nodeId, sessionName: current.canonicalSessionName,
           idleMinutes: Math.floor((this.now() - since) / 60_000), thresholdMinutes: settings.idleThresholdMinutes,
           eligibility: { ...proof.snapshot, workspace: "clean" as const, protectedRig: false as const, optedIn: true as const, deliveryLease: true as const } };
-        if (settings.observe) { this.emit({ ...common, phase: "decision", decision: "would-reap-observe" }); return; }
+        if (settings.observe) { this.emitDecisionOnce(seat.nodeId, "would-reap-observe", common); return; }
         const liveSettings = (this.deps.settings ?? readSeatReaperSettings)();
         if (!liveSettings.enabled || liveSettings.observe || !liveSettings.optInRigs.includes(seat.rigName) || liveSettings.protectedRigs.includes(seat.rigName)) {
           this.store.reset(seat.nodeId); return;
@@ -140,13 +153,13 @@ export class SeatReaperService {
         const captured = await this.deps.capture(current);
         if (captured.outcome !== "captured" || captured.token !== proof.session.resume_token) {
           this.store.reset(seat.nodeId); this.failed = true;
-          this.emit({ ...common, phase: "decision", decision: "defer-probe-failed" }); return;
+          this.emitDecisionOnce(seat.nodeId, "defer-probe-failed", common); return;
         }
         const workspace = await workspaceCheck();
         if (workspace !== "clean") {
           for (const member of getNodeInventory(this.deps.db, seat.rigId)) this.store.reset(member.nodeId);
           this.failed ||= workspace === "defer-probe-failed";
-          this.emit({ ...common, phase: "decision", decision: workspace }); return;
+          this.emitDecisionOnce(seat.nodeId, workspace, common); return;
         }
         const finalSettings = (this.deps.settings ?? readSeatReaperSettings)();
         if (!finalSettings.enabled || finalSettings.observe || !finalSettings.optInRigs.includes(seat.rigName)
@@ -179,7 +192,7 @@ export class SeatReaperService {
     } catch (error) {
       this.store.reset(seat.nodeId); this.failed = true;
       if (attempted) { this.store.attention(seat.nodeId); this.terminate("stop_uncertain"); }
-      this.emit({ phase: "decision", rigId: seat.rigId, nodeId: seat.nodeId, decision: "defer-probe-failed" });
+      this.emitDecisionOnce(seat.nodeId, "defer-probe-failed", { rigId: seat.rigId });
       if (!(error instanceof Error)) throw error;
     }
   }
