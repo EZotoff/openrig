@@ -5,6 +5,11 @@ import { workflowInstanceRootObjectiveSchema } from "./migrations/154_workflow_i
 import { queueErasureSchema } from "./migrations/155_queue_erasure.js";
 import { queueErasureLinkIndexesSchema } from "./migrations/156_queue_erasure_link_indexes.js";
 import { queueErasureBatchesSchema } from "./migrations/157_queue_erasure_batches.js";
+import { queueInboxCheckinsSchema } from "./migrations/158_queue_inbox_checkins.js";
+import { queueItemsHandedOffFromIndexSchema } from "./migrations/159_queue_items_handed_off_from_index.js";
+import { networkBindingsSchema } from "./migrations/160_network_bindings.js";
+import { networkReceiptsSchema } from "./migrations/161_network_receipts.js";
+import { sessionAddressReadIndexesSchema } from "./migrations/162_session_address_read_indexes.js";
 import { activityGrantsSchema } from "./migrations/143_activity_grants.js";
 import { environmentBindingsSchema } from "./migrations/144_environment_bindings.js";
 import { nodePermissionsToSchema } from "./migrations/145_node_permissions_to.js";
@@ -159,7 +164,7 @@ import { queueDelegatedDecisionSchema } from "./migrations/123_queue_delegated_d
 import { contextUsageWatchdogUnitsSchema } from "./migrations/124_context_usage_watchdog_units.js";
 import { nodeAdvisorSchema } from "./migrations/125_node_advisor.js";
 import { operationCorrelationSchema } from "./migrations/127_operation_correlation.js";
-import { seatReapStateSchema } from "./migrations/158_seat_reap_state.js";
+import { seatReapStateSchema } from "./migrations/164_seat_reap_state.js";
 
 /** Ordered migrations; numbers may be reserved by independent changes. */
 
@@ -318,5 +323,10 @@ export const ALL_MIGRATIONS: Migration[] = [
   queueErasureSchema,
   queueErasureLinkIndexesSchema,
   queueErasureBatchesSchema,
+  queueInboxCheckinsSchema,
+  queueItemsHandedOffFromIndexSchema,
+  networkBindingsSchema,
+  networkReceiptsSchema,
+  sessionAddressReadIndexesSchema,
   seatReapStateSchema,
 ];

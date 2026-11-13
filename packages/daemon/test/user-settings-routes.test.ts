@@ -116,6 +116,8 @@ describe("config routes (User Settings v0)", () => {
     // + 1 output.whoami_peers (slice 15 P5 whoami peer bound; default 8).
     // + 1 usage.pi_cost_facts (slice 02 Pi cost from persisted entries; default off).
     // + 1 usage.pi_openrouter_charge (slice 02 K4 OpenRouter charge beside the Pi estimate; default off).
+    // + 1 terminal.fixed_geometry (web pin opt-in; default off).
+    expect(body.settings["terminal.fixed_geometry"]).toMatchObject({ value: false, source: "default" });
     // + 1 terminal.tmux_server (per-instance server selection; default inherit).
     expect(body.settings["terminal.tmux_server"]).toMatchObject({ value: "inherit", source: "default" });
     // + 1 transport.verify_input_box (input-box evidence for verified Claude Code and Codex sends; default off).
@@ -141,7 +143,7 @@ describe("config routes (User Settings v0)", () => {
     // + 2 retention.closed_content_days, retention.closed_metadata_days (closed-work erasure; default 0 = keep).
     // + 1 retention.erasure_ledger (queue erasure's replay ledger; default empty = none).
     // + 6 policies.seat_scale.* (the idle-seat reaper's kill switch, observe flag, threshold, cap, protected and opt-in rigs).
-    expect(Object.keys(body.settings).length).toBe(109);
+    expect(Object.keys(body.settings).length).toBe(110);
     expect(body.settings["launch.codex_login_shell"]).toMatchObject({ value: false, source: "default", defaultValue: false });
     expect(body.settings["transport.draft_delivery"]).toMatchObject({ value: "deliver", source: "default", defaultValue: "deliver" });
     expect(body.settings["retention.events_days"]).toMatchObject({ value: 0, source: "default", defaultValue: 0 });
