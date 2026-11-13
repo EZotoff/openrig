@@ -1,7 +1,7 @@
 import type { Migration } from "../migrate.js";
 
 export const seatReapStateSchema: Migration = {
-  name: "158_seat_reap_state.sql",
+  name: "168_seat_reap_state.sql",
   sql: `
     CREATE TABLE seat_reap_state (
       node_id TEXT PRIMARY KEY REFERENCES nodes(id) ON DELETE CASCADE,
