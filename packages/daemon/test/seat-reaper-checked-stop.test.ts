@@ -15,13 +15,16 @@ it.each([false, true])("uses the real checked stop and lifecycle lease (uncertai
     commands.push(command);
     if (command.includes("has-session")) return "";
     if (command.includes("list-panes")) return "%1|0|/fixture|120|40|1";
-    if (command.includes("display-message")) return "$7";
-    if (command.includes("detach-client")) return "";
+    if (command.includes("show-environment")) return "OPENRIG_NODE_ID=a";
+    // The guarded if-shell wraps its fallback in display-message, so match the effect
+    // commands first and only then the plain probes.
     if (command.includes("kill-session")) {
       expect(f.events().at(-1)).toMatchObject({ phase: "capture", sessionId: "s" });
       if (uncertain) throw Error("kill interrupted");
       killed = true; return "";
     }
+    if (command.includes("detach-client")) return "";
+    if (command.startsWith("tmux display-message")) return "$7|4242|1700000000";
     throw Error(`unexpected command ${command}`);
   });
   const guard = new SeatDeliveryGuard(f.db, name => resolveGuardTarget(f.db, name)); tmux.deliveryGuard = guard;
@@ -31,7 +34,13 @@ it.each([false, true])("uses the real checked stop and lifecycle lease (uncertai
   // When the eligible seat reaches its threshold under the real guard.
   for (let i = 0; i <= 60; i++) { at += 60_000; await service.tick(); }
   // Then only the reviewed tmux session is targeted, and effects match the receipt.
-  expect(commands.filter(command => command.includes("kill-session"))).toEqual(["tmux kill-session -t '$7'"]);
+  // Upstream kills through a conditional if-shell that re-verifies the reviewed pane's
+  // session id + pid + start time atomically, so the whole command is the receipt.
+  const kills = commands.filter(command => command.includes("kill-session"));
+  expect(kills).toHaveLength(1);
+  expect(kills[0]).toContain("if-shell");
+  expect(kills[0]).toContain("$7");
+  expect(kills[0]).toContain("1700000000");
   expect(killed).toBe(!uncertain);
   expect(f.events()).toContainEqual(expect.objectContaining({ phase: "effect", budgetConsumed: true,
     result: expect.objectContaining(uncertain ? { ok: false, code: "stop_uncertain" } : { ok: true }) }));

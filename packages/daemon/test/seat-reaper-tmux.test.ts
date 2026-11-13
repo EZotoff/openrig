@@ -20,6 +20,9 @@ it.each([false, true])("exercises real isolated tmux without an agent provider (
   // A sibling session keeps the server alive after the seat session is killed, so absence is a
   // positive tmux answer (transport_unavailable would mean the server, not just the seat, was gone).
   await run("new-session", "-d", "-s", "keeper", "sleep 300");
+  // The seat's tmux session carries its own OpenRig marker, as a launched seat does; a session
+  // without it is left alone by the checked stop (adopted/foreign sessions).
+  await run("set-environment", "-t", "worker@test", "OPENRIG_NODE_ID", "a");
   try {
     const f = fixture(); f.settings.observe = observe;
     f.db.prepare("UPDATE bindings SET tmux_pane=?").run(pane);
