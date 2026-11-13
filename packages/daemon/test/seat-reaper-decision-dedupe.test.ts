@@ -40,3 +40,19 @@ it("still records would-reap-observe for an eligible seat, once per unchanged st
   expect(decisions[0]).toMatchObject({ decision: "would-reap-observe", idleMinutes: 60 });
   expect(f.stops).toHaveLength(0);
 });
+
+it("defers instead of holding the delivery lease when the workspace re-check overruns", async () => {
+  // Given a reaper whose in-lease workspace probe never settles.
+  const f = fixture();
+  // The per-rig pass probe answers clean; only the in-lease re-check never settles.
+  let probes = 0;
+  // Ticks 1..61 answer clean (61 = the pass probe of the tick that reaches the threshold) (the clock is still maturing); from the first tick past the
+  // threshold the probe never settles, so the in-lease re-check must hit its deadline.
+  f.deps.workspaceProbe = () => (++probes <= 61 ? Promise.resolve("clean" as const) : new Promise<never>(() => {}));
+  f.deps.workspaceRecheckDeadlineMs = 20;
+  // When an eligible seat crosses its threshold and the re-check is attempted.
+  for (let i = 0; i < 61; i++) await f.tick();
+  // Then no stop is attempted and the pass is treated as an uncertain probe.
+  expect(f.stops).toHaveLength(0);
+  expect(f.events().some(event => event.phase === "decision" && event.decision === "defer-probe-failed")).toBe(true);
+}, 30_000);

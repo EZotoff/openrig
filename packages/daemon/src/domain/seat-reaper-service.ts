@@ -13,6 +13,20 @@ import { SeatReaperStore } from "./seat-reaper-store.js";
 import { reapWorkspacePaths, probeReapWorkspace, type WorkspaceProbe } from "./seat-reaper-workspace.js";
 import type { SeatReapedEvent } from "./seat-reaper-events.js";
 
+/** The in-lease workspace re-check runs inside the seat's delivery lease, so it gets a
+ * TOTAL deadline: each git call is bounded (10 s) but a rig with many repos could
+ * otherwise hold the lease for minutes and delay that seat's queued work. */
+const WORKSPACE_RECHECK_DEADLINE_MS = 20_000;
+
+function settleWithin<T>(promise: Promise<T>, deadlineMs: number, fallback: T): Promise<T> {
+  return new Promise<T>(resolve => {
+    const timer = setTimeout(() => resolve(fallback), deadlineMs);
+    timer.unref?.();
+    promise.then(value => { clearTimeout(timer); resolve(value); },
+      () => { clearTimeout(timer); resolve(fallback); });
+  });
+}
+
 export interface SeatReaperDeps {
   readonly db: Database.Database;
   readonly eventBus: EventBus;
@@ -23,6 +37,8 @@ export interface SeatReaperDeps {
   readonly settings?: () => SeatReaperSettings;
   readonly now?: () => number;
   readonly workspaceProbe?: (paths: readonly string[]) => Promise<WorkspaceProbe>;
+  /** Test seam for the in-lease re-check deadline; production keeps the 20 s default. */
+  readonly workspaceRecheckDeadlineMs?: number;
 }
 
 export class SeatReaperService {
@@ -86,8 +102,9 @@ export class SeatReaperService {
           await this.consider(seat, settings, async () => {
             const currentRig = z.object({ workspace_json: z.string().nullable() }).parse(
               this.deps.db.prepare("SELECT workspace_json FROM rigs WHERE id=? AND archived_at IS NULL").get(rig.id));
-            return (this.deps.workspaceProbe ?? probeReapWorkspace)(reapWorkspacePaths(currentRig.workspace_json,
+            const probe = (this.deps.workspaceProbe ?? probeReapWorkspace)(reapWorkspacePaths(currentRig.workspace_json,
               getNodeInventory(this.deps.db, rig.id).flatMap(s => s.cwd ? [s.cwd] : [])));
+            return settleWithin(probe, this.deps.workspaceRecheckDeadlineMs ?? WORKSPACE_RECHECK_DEADLINE_MS, "defer-probe-failed" as WorkspaceProbe);
           });
         }
         if (this.ended) break;
