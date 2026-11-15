@@ -778,6 +778,9 @@ export function buildSlackGatewayWire(opts: SlackWireOpts): GatewayWire {
               `thread_ts=${threadTs ?? messageTs}`,
             ].join(" "),
           });
+          // The words this person just received from this seat, for the identical-content drop in
+          // engineDeliver: recorded only after the real post (a held or failed notice dedupes nothing).
+          if (p.ownerNotificationKind === "human-update") outboundSeen.mark(postedContentKey(p), "posted-content");
         },
         log,
       })
@@ -904,6 +907,12 @@ export function buildSlackGatewayWire(opts: SlackWireOpts): GatewayWire {
   // A replayed notification for a row that has since left the active states is history, not news
   // (a post that failed, retried a day later): it posts nothing, and the row says why, unless the
   // episode already has its posted receipt. Returning ok drains it from the dispatch buffer.
+  // Content identity of a person-facing notice: who serves it, who reads it, and what it says. Two rows
+  // carrying the same words from the same seat to the same person are the same message, whatever row
+  // holds them — the person cannot tell the rows apart, only the words.
+  const postedContentKey = (p: OutboundPostPayload): string =>
+    `posted-content:${p.sourceSession ?? ""}:${p.destinationSession ?? ""}:${createHash("sha256")
+      .update(`${String(p.summary ?? "")}\n\n${String(p.body ?? "")}`).digest("hex").slice(0, 24)}`;
   const dropStaleNotification = (p: OutboundPostPayload, state: string): void => {
     const key = p.notificationKey ?? p.qitemId;
     const notes = opts.queueRepo.transitionLog.listForQitem(p.qitemId).map((t) => t.transitionNote ?? "");
@@ -1164,6 +1173,35 @@ export function buildSlackGatewayWire(opts: SlackWireOpts): GatewayWire {
       // A deferred re-shown ask keeps its marks when the fire posts it: the fire checks nothing again.
       const marks = relay ? {} : rowMarks(p.qitemId, fireKey);
       return targetDeliver(Object.keys(marks).length > 0 ? { ...decision, payload: { ...p, ...marks } } : decision);
+    }
+    // A status notice (human-update) that says exactly what this seat last delivered to this person posts
+    // nothing: the person already has these words, and re-served standing state reads as the agent ignoring
+    // the answers they gave. Asks (human-required) keep their own machinery (re-show, reopen, re-present),
+    // digests and relays are exempt (a digest aggregates members; a relay records its delivery elsewhere),
+    // and so is a notice that answers a thread (replyTo): the existing #96 cells deliberately re-post
+    // identical content as a follow-up, so a conversation reply is never content-deduped. Checked at post
+    // time, after every already-decided path above, so an identical notice is never armed into a quiet hold
+    // or a digest either. A store that cannot be read posts (dedup is a courtesy, not a gate).
+    if (p.qitemId && !p.replyTo && p.ownerNotificationKind === "human-update" && !relay
+      && !(p as { deliveryDigestPost?: boolean }).deliveryDigestPost) {
+      const contentKey = postedContentKey(p);
+      let alreadyPosted = false;
+      try {
+        alreadyPosted = outboundSeen.load().has(contentKey);
+      } catch {
+        alreadyPosted = false;
+      }
+      if (alreadyPosted) {
+        const key = p.notificationKey ?? p.qitemId;
+        const note = `slack-owner-notification-dropped notification_key=${key} reason=identical-content`;
+        const notes = opts.queueRepo.transitionLog.listForQitem(p.qitemId).map((t) => t.transitionNote ?? "");
+        if (!notes.includes(note)) {
+          opts.queueRepo.update({ qitemId: p.qitemId, actorSession: "daemon@kernel", transitionNote: note });
+        }
+        outboundSeen.mark(key, "dropped-identical-content");
+        releaseRef(key);
+        return { ok: true as const };
+      }
     }
     // A post confirmed partly in Slack finishes without consulting quiet hours, so it is resolved before the decision
     // (which reads them). Only a started multipart post is checked here, from the stores first, so an ordinary
