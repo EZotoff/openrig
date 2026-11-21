@@ -55,6 +55,10 @@ import { queryLimit, SQL_LIMIT_BOUND } from "./query-limit.js";
 import { feedPerspective } from "../domain/feed-perspective.js";
 import { waitForQueueItem } from "../domain/queue-read-wait.js";
 import { exemptSlowOpRequest } from "../domain/slow-op-recorder.js";
+import { exportQueueArchive, QueueTransferScopeError } from "../domain/queue-transfer-export.js";
+import { importQueueArchive } from "../domain/queue-transfer-import.js";
+import { QueueStagingRepository } from "../domain/queue-staging-repository.js";
+import { QueueTransferRefusal } from "../domain/queue-transfer-archive.js";
 
 /**
  * Coordination L3 — Queue HTTP routes (PL-004 Phase A).
@@ -764,6 +768,88 @@ export function queueRoutes(): Hono {
       }
     };
   }
+
+  // Queue transfer milestone 1 (issue #3094): passive export, dry-run report, inactive staging.
+  // Local-daemon only; there is no cross-host read-through or remote pull lane (§15).
+  function transferDb(c: Context): Database.Database | null {
+    return (c.get("db" as never) as Database.Database | undefined) ?? null;
+  }
+
+  function transferRefusalResponse(c: Context, error: unknown): Response {
+    if (error instanceof QueueTransferScopeError) {
+      return c.json({ error: error.code, message: error.message }, 400);
+    }
+    if (error instanceof QueueTransferRefusal) {
+      const status: 400 | 409 | 413 =
+        error.code === "qitem_id_collision" ? 409 : error.code === "archive_too_large" ? 413 : 400;
+      return c.json(
+        { error: error.code, message: error.message, ...(error.details ? { details: error.details } : {}) },
+        status,
+      );
+    }
+    throw error;
+  }
+
+  function stringList(value: unknown): string[] | undefined {
+    return Array.isArray(value) ? value.filter((entry): entry is string => typeof entry === "string") : undefined;
+  }
+
+  app.post("/transfer/export", async (c) => {
+    const db = transferDb(c);
+    if (!db) return c.json({ error: "db_unavailable" }, 500);
+    const body = (await c.req.json<Record<string, unknown>>().catch(() => ({}))) as Record<string, unknown>;
+    try {
+      const result = exportQueueArchive(db, {
+        wholeHost: body.wholeHost === true,
+        rigs: stringList(body.rigs),
+        missions: stringList(body.missions),
+        slices: stringList(body.slices),
+        qitemIds: stringList(body.qitemIds),
+        includeClosed: typeof body.includeClosed === "boolean" ? body.includeClosed : undefined,
+        maxBytes: typeof body.maxBytes === "number" ? body.maxBytes : undefined,
+      });
+      return c.json({ archive: result.text, envelope: result.envelope, selection: result.selection });
+    } catch (error) {
+      return transferRefusalResponse(c, error);
+    }
+  });
+
+  app.post("/transfer/import", async (c) => {
+    const db = transferDb(c);
+    if (!db) return c.json({ error: "db_unavailable" }, 500);
+    const body = (await c.req.json<Record<string, unknown>>().catch(() => ({}))) as Record<string, unknown>;
+    if (typeof body.archive !== "string") {
+      return c.json({ error: "archive_required", message: "body.archive must be the archive text" }, 400);
+    }
+    try {
+      const report = importQueueArchive(db, body.archive, {
+        dryRun: body.dryRun === true,
+        maxBytes: typeof body.maxBytes === "number" ? body.maxBytes : undefined,
+      });
+      return c.json(report);
+    } catch (error) {
+      return transferRefusalResponse(c, error);
+    }
+  });
+
+  app.get("/transfer/staged", (c) => {
+    const db = transferDb(c);
+    if (!db) return c.json({ error: "db_unavailable" }, 500);
+    return c.json({ records: new QueueStagingRepository(db).list() });
+  });
+
+  app.post("/transfer/staged/discard", async (c) => {
+    const db = transferDb(c);
+    if (!db) return c.json({ error: "db_unavailable" }, 500);
+    const body = (await c.req.json<Record<string, unknown>>().catch(() => ({}))) as Record<string, unknown>;
+    if (typeof body.importId !== "string" || !body.importId) {
+      return c.json({ error: "import_id_required" }, 400);
+    }
+    const repository = new QueueStagingRepository(db);
+    const discarded = repository.discard(body.importId);
+    if (!discarded) return c.json({ error: "staged_import_not_found", importId: body.importId }, 404);
+    return c.json({ discarded: true, record: repository.get(body.importId) });
+  });
 
   // POST /create
   app.post("/create", async (c) => {

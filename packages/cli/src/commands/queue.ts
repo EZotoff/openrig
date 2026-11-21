@@ -2778,5 +2778,169 @@ Examples:
       });
     });
 
+  // Queue transfer milestone 1 (issue #3094): passive export, dry-run report and inactive staging.
+  // The CLI only moves bytes to/from the local daemon; it never writes queue state itself.
+  const collectRepeatable = (value: string, previous: string[] = []): string[] => [...previous, value];
+
+  cmd
+    .command("export")
+    .description("Write a passive openrig.queue-transfer/v2 archive of an explicitly selected set of queue work")
+    .option("--whole-host", "Select every queue row on this host (an explicit option, never the default)")
+    .option("--rig <name>", "Select rows whose source or destination belongs to this rig (repeatable)", collectRepeatable, [])
+    .option("--mission <id>", "Select rows tagged mission:<id> (repeatable)", collectRepeatable, [])
+    .option("--slice <id>", "Select rows tagged slice:<id> (repeatable)", collectRepeatable, [])
+    .option("--qitem <id>", "Select this exact qitem id (repeatable)", collectRepeatable, [])
+    .option("--include-closed", "Include terminal rows (defaults to true for --whole-host/--rig, false otherwise)")
+    .option("--preview", "Mark this as an unfrozen preview; milestone 1 exports are always passive previews")
+    .option("--max-bytes <n>", "Refuse an archive at or above this many bytes (default 268435456)", positiveIntArg)
+    .requiredOption("--out <file>", "Write the archive here (permissions 0600; the archive is as sensitive as the database)")
+    .option("--json", "JSON output for agents")
+    .action(async (opts: {
+      wholeHost?: boolean;
+      rig?: string[];
+      mission?: string[];
+      slice?: string[];
+      qitem?: string[];
+      includeClosed?: boolean;
+      preview?: boolean;
+      maxBytes?: number;
+      out: string;
+      json?: boolean;
+    }) => {
+      const rigs = opts.rig ?? [];
+      const missions = opts.mission ?? [];
+      const slices = opts.slice ?? [];
+      const qitemIds = opts.qitem ?? [];
+      if (!opts.wholeHost && rigs.length === 0 && missions.length === 0 && slices.length === 0 && qitemIds.length === 0) {
+        console.error("an export needs an explicit selection: at least one of --whole-host, --rig, --mission, --slice, --qitem");
+        process.exitCode = 1;
+        return;
+      }
+      const deps = getDeps();
+      await withClient(deps, async (client) => {
+        const res = await client.post<{
+          archive?: string;
+          selection?: { kind: string; includeClosed: boolean; counts: { total: number; open: number; terminal: number; erased: number } };
+        }>("/api/queue/transfer/export", {
+          wholeHost: opts.wholeHost === true,
+          rigs,
+          missions,
+          slices,
+          qitemIds,
+          includeClosed: opts.includeClosed === true ? true : undefined,
+          maxBytes: opts.maxBytes,
+        });
+        if (res.status >= 400 || typeof res.data.archive !== "string") {
+          printResult(opts.json ?? false, res.data, res.status);
+          return;
+        }
+        fs.writeFileSync(opts.out, res.data.archive, { mode: 0o600 });
+        try { fs.chmodSync(opts.out, 0o600); } catch { /* best-effort on filesystems without modes */ }
+        const selection = res.data.selection;
+        if (opts.json) {
+          console.log(JSON.stringify({ out: opts.out, selection }));
+          return;
+        }
+        if (selection) {
+          const scope = [
+            opts.wholeHost ? "whole host" : undefined,
+            rigs.length ? `rigs=${rigs.join(",")}` : undefined,
+            missions.length ? `missions=${missions.join(",")}` : undefined,
+            slices.length ? `slices=${slices.join(",")}` : undefined,
+            qitemIds.length ? `qitems=${qitemIds.join(",")}` : undefined,
+          ].filter(Boolean).join(" ");
+          console.log(`Selection (${selection.kind}): ${scope}`);
+          console.log(`includeClosed=${selection.includeClosed}  rows total=${selection.counts.total} open=${selection.counts.open} terminal=${selection.counts.terminal} erased=${selection.counts.erased}`);
+        }
+        console.log(`Wrote ${opts.out} (mode 0600; passive export, relinquishes nothing)`);
+      });
+    });
+
+  cmd
+    .command("import <file>")
+    .description("Validate an archive and stage it durably and inactively (dry-run writes nothing)")
+    .option("--dry-run", "Run every check and write nothing")
+    .option("--json", "JSON output for agents")
+    .action(async (file: string, opts: { dryRun?: boolean; json?: boolean }) => {
+      let archive: string;
+      try {
+        archive = fs.readFileSync(file, "utf8");
+      } catch (error) {
+        console.error(`cannot read archive ${file}: ${(error as Error).message}`);
+        process.exitCode = 1;
+        return;
+      }
+      const deps = getDeps();
+      await withClient(deps, async (client) => {
+        const res = await client.post<{
+          status?: string;
+          importId?: string | null;
+          alreadyStaged?: boolean;
+          counts?: { total: number; wouldBecomeRunnable: number; inProgress: number; blocked: number; terminal: number; erased: number };
+          warnings?: Array<{ code: string; message: string }>;
+          error?: string;
+          message?: string;
+        }>("/api/queue/transfer/import", { archive, dryRun: opts.dryRun === true });
+        if (opts.json) {
+          console.log(JSON.stringify(res.data));
+        } else if (res.status >= 400) {
+          console.error(`${res.data.error ?? "import_refused"}: ${res.data.message ?? "the archive was refused"}`);
+        } else {
+          const counts = res.data.counts;
+          console.log(`${opts.dryRun ? "Dry run" : "Staged"}: ${res.data.status ?? "not_ready_for_activation"}`);
+          if (counts) {
+            console.log(`rows total=${counts.total} would-become-runnable=${counts.wouldBecomeRunnable} in-progress(runnable after activation projection, M2)=${counts.inProgress} blocked=${counts.blocked} terminal=${counts.terminal} erased=${counts.erased}`);
+          }
+          if (res.data.importId) console.log(`importId ${res.data.importId}${res.data.alreadyStaged ? " (already staged)" : ""}`);
+          for (const warning of res.data.warnings ?? []) console.log(`warning ${warning.code}: ${warning.message}`);
+        }
+        if (res.status >= 400) process.exitCode = 1;
+      });
+    });
+
+  const stagedCmd = cmd
+    .command("staged")
+    .description("Inspect or discard staged queue-transfer imports");
+
+  stagedCmd
+    .command("list")
+    .description("List staged queue-transfer imports")
+    .option("--json", "JSON output for agents")
+    .action(async (opts: { json?: boolean }) => {
+      const deps = getDeps();
+      await withClient(deps, async (client) => {
+        const res = await client.get<{ records?: Array<{ importId: string; digest: string; originHostId: string; rowCount: number; status: string; stagedAt: string }> }>("/api/queue/transfer/staged");
+        if (opts.json) {
+          console.log(JSON.stringify(res.data));
+        } else {
+          const records = res.data.records ?? [];
+          if (records.length === 0) console.log("No staged imports.");
+          for (const record of records) {
+            console.log(`${record.importId}  ${record.digest.slice(0, 12)}  ${record.originHostId}  rows=${record.rowCount}  ${record.status}  ${record.stagedAt}`);
+          }
+        }
+        if (res.status >= 400) process.exitCode = 1;
+      });
+    });
+
+  stagedCmd
+    .command("discard <importId>")
+    .description("Explicitly discard one staged import (keeps its envelope; writes no ownership record)")
+    .option("--json", "JSON output for agents")
+    .action(async (importId: string, opts: { json?: boolean }) => {
+      const deps = getDeps();
+      await withClient(deps, async (client) => {
+        const res = await client.post<{ discarded?: boolean; error?: string }>("/api/queue/transfer/staged/discard", { importId });
+        if (opts.json) {
+          console.log(JSON.stringify(res.data));
+        } else if (res.status >= 400) {
+          console.error(`${res.data.error ?? "discard_failed"}: staged import ${importId} was not discarded`);
+        } else {
+          console.log(`Discarded ${importId}`);
+        }
+        if (res.status >= 400) process.exitCode = 1;
+      });
+    });
+
   return cmd;
 }
