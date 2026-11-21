@@ -54,7 +54,7 @@ export interface TransferOrigin {
 }
 
 export interface TransferTransition {
-  transitionId: string;
+  transitionId: number;
   qitemId: string;
   ts: string;
   state: string;
@@ -73,7 +73,7 @@ export interface TransferArchivedTransition extends TransferTransition {
 }
 
 export interface TransferWake {
-  transitionId: string;
+  transitionId: number;
   qitemId: string;
   phase: string;
   wakeKind: string;
