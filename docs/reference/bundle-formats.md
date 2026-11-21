@@ -13,6 +13,9 @@ status schema also rejects labels that contradict their evidence: a tested label
 with help needs its count, tested can't carry a count above zero, and an unreadable listing carries only Status
 unavailable.
 
+The queue transfer archive (`openrig.queue-transfer/v2`) follows the same growth rule; see
+[`queue-transfer.md`](queue-transfer.md).
+
 ## Three identities, kept apart
 
 | What | Name | Defined by |
