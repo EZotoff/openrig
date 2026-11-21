@@ -42,7 +42,8 @@ export interface TransferScope {
   slices: string[];
   qitemIds: string[];
   includeClosed: boolean;
-  selectionShownAt: string;
+  /** Omitted only when the document itself omits it (so a re-parse keeps the original digest). */
+  selectionShownAt?: string;
 }
 
 export interface TransferOrigin {
@@ -350,7 +351,7 @@ function parseScope(value: unknown): TransferScope {
     slices: stringArray(source.slices),
     qitemIds: stringArray(source.qitemIds),
     includeClosed: source.includeClosed === true,
-    selectionShownAt: str(source.selectionShownAt),
+    ...(typeof source.selectionShownAt === "string" ? { selectionShownAt: source.selectionShownAt } : {}),
   };
 }
 
